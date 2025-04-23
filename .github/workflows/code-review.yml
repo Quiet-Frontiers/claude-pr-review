@@ -1,12 +1,13 @@
 name: Automated PR Code Review
 
-permissions:
-  contents: read
-  pull-requests: write
-
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+
+# PR에 코멘트를 작성할 수 있는 권한 설정
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   code-review:

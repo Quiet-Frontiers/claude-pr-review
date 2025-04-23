@@ -1,0 +1,238 @@
+name: Automated PR Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install @octokit/rest axios
+
+      - name: Run Code Review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          cat > code-review.js << 'EOL'
+          const { Octokit } = require('@octokit/rest');
+          const axios = require('axios');
+
+          // GitHub API 클라이언트 설정
+          const setupGitHubClient = (token) => {
+            return new Octokit({
+              auth: token
+            });
+          };
+
+          // PR 변경 사항 가져오기
+          const getPRChanges = async (octokit, owner, repo, pullNumber) => {
+            const { data: files } = await octokit.pulls.listFiles({
+              owner,
+              repo,
+              pull_number: pullNumber
+            });
+            
+            return files;
+          };
+
+          // PR에 댓글 작성하기
+          const commentOnPR = async (octokit, owner, repo, pullNumber, body) => {
+            await octokit.issues.createComment({
+              owner,
+              repo,
+              issue_number: pullNumber,
+              body
+            });
+          };
+
+          // 특정 코드 라인에 댓글 작성하기 
+          const commentOnCode = async (octokit, owner, repo, pullNumber, commitId, path, position, body) => {
+            await octokit.pulls.createReviewComment({
+              owner,
+              repo,
+              pull_number: pullNumber,
+              commit_id: commitId,
+              path,
+              position,
+              body
+            });
+          };
+
+          // Claude API를 사용하여 코드 분석하기
+          const analyzeCodeWithClaude = async (apiKey, code, language) => {
+            const response = await axios.post('https://api.anthropic.com/v1/messages', {
+              model: "claude-3-7-sonnet-20250219",
+              max_tokens: 4000,
+              messages: [{
+                role: "user",
+                content: `다음 ${language} 코드를 분석하고 개선 사항을 제안해주세요:
+                
+          ${code}
+
+          다음 형식으로 분석해주세요:
+          1. 코드 품질 평가
+          2. 잠재적 버그 또는 성능 문제
+          3. 개선 제안
+          4. 코드 스타일 및 가독성 피드백`
+              }]
+            }, {
+              headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey
+              }
+            });
+            
+            return response.data.content[0].text;
+          };
+
+          // 메인 함수: PR 코드 리뷰 실행
+          const reviewPullRequest = async (config) => {
+            const {
+              githubToken,
+              claudeApiKey,
+              owner,
+              repo,
+              pullNumber
+            } = config;
+            
+            try {
+              // GitHub API 클라이언트 설정
+              const octokit = setupGitHubClient(githubToken);
+              
+              // PR 정보 가져오기
+              const { data: pullRequest } = await octokit.pulls.get({
+                owner,
+                repo,
+                pull_number: pullNumber
+              });
+              
+              // PR 변경 사항 가져오기
+              const files = await getPRChanges(octokit, owner, repo, pullNumber);
+              
+              // PR 요약 코멘트 생성
+              let summaryComment = `# 자동 코드 리뷰 결과\n\n`;
+              summaryComment += `PR #${pullNumber}: ${pullRequest.title}\n\n`;
+              summaryComment += `이 PR에서는 ${files.length}개의 파일이 변경되었습니다.\n\n`;
+              
+              // 각 파일에 대한 코드 리뷰 실행
+              for (const file of files) {
+                // 파일 확장자로 언어 감지
+                const fileExtension = file.filename.split('.').pop();
+                let language = '';
+                
+                switch (fileExtension) {
+                  case 'js':
+                    language = 'JavaScript';
+                    break;
+                  case 'py':
+                    language = 'Python';
+                    break;
+                  case 'java':
+                    language = 'Java';
+                    break;
+                  case 'ts':
+                    language = 'TypeScript';
+                    break;
+                  case 'rb':
+                    language = 'Ruby';
+                    break;
+                  case 'go':
+                    language = 'Go';
+                    break;
+                  case 'cpp':
+                  case 'cc':
+                  case 'cxx':
+                    language = 'C++';
+                    break;
+                  case 'c':
+                    language = 'C';
+                    break;
+                  case 'cs':
+                    language = 'C#';
+                    break;
+                  default:
+                    language = 'Unknown';
+                }
+                
+                // 텍스트 파일만 분석 (바이너리 파일 제외)
+                if (language !== 'Unknown' && file.patch && file.changes < 1000) {
+                  console.log(`파일 분석 중: ${file.filename}`);
+                  
+                  try {
+                    // Claude를 통해 코드 분석
+                    const analysis = await analyzeCodeWithClaude(claudeApiKey, file.patch, language);
+                    
+                    // 파일별 리뷰 코멘트 생성
+                    summaryComment += `\n## ${file.filename} 분석\n\n${analysis}\n\n`;
+                    
+                    // 특정 코드 라인에 코멘트 추가
+                    if (file.patch && pullRequest.head.sha) {
+                      await commentOnCode(
+                        octokit,
+                        owner,
+                        repo,
+                        pullNumber,
+                        pullRequest.head.sha,
+                        file.filename,
+                        file.changes > 0 ? Math.min(file.changes, 5) : 1, // 변경된 첫 부분 근처에 코멘트
+                        `${language} 코드 리뷰:\n\n${analysis.split('\n').slice(0, 3).join('\n')}...`
+                      );
+                    }
+                  } catch (error) {
+                    console.error(`${file.filename} 분석 중 오류:`, error);
+                    summaryComment += `\n## ${file.filename}\n\n분석 중 오류가 발생했습니다.\n\n`;
+                  }
+                } else if (file.changes >= 1000) {
+                  summaryComment += `\n## ${file.filename}\n\n파일이 너무 크거나 복잡하여 분석을 건너뛰었습니다 (${file.changes}줄 변경).\n\n`;
+                }
+              }
+              
+              // PR에 종합 코멘트 작성
+              await commentOnPR(octokit, owner, repo, pullNumber, summaryComment);
+              
+              return {
+                status: 'success',
+                message: `PR #${pullNumber} 코드 리뷰 완료`
+              };
+              
+            } catch (error) {
+              console.error('코드 리뷰 중 오류 발생:', error);
+              return {
+                status: 'error',
+                message: error.message
+              };
+            }
+          };
+
+          // 환경 변수에서 설정 가져오기
+          const config = {
+            githubToken: process.env.GITHUB_TOKEN,
+            claudeApiKey: process.env.CLAUDE_API_KEY,
+            owner: process.env.REPO_OWNER,
+            repo: process.env.REPO_NAME,
+            pullNumber: parseInt(process.env.PR_NUMBER)
+          };
+
+          // 코드 리뷰 실행
+          reviewPullRequest(config)
+            .then(result => console.log(result))
+            .catch(error => console.error(error));
+          EOL
+
+          node code-review.js

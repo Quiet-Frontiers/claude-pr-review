@@ -27,33 +27,10 @@ jobs:
         run: npm install @octokit/rest@18.12.0 axios
 
       - name: Create Code Review Script
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
         run: |
           cat > code-review.js << 'EOL'
           const { Octokit } = require('@octokit/rest');
           const axios = require('axios');
-
-          // 디버깅 설정
-          const DEBUG = true; // 디버깅 모드 활성화
-
-          // 디버깅 로그 함수
-          const debugLog = (message, data) => {
-            if (DEBUG) {
-              console.log(`[DEBUG] ${message}`);
-              if (data) {
-                try {
-                  console.log(JSON.stringify(data, null, 2));
-                } catch (e) {
-                  console.log('데이터를 JSON으로 직렬화할 수 없습니다:', data);
-                }
-              }
-            }
-          };
 
           // GitHub API 클라이언트 설정
           const setupGitHubClient = (token) => {
@@ -83,67 +60,26 @@ jobs:
             });
           };
 
-          // 특정 코드 라인에 댓글 작성하기 
-          const commentOnCode = async (octokit, owner, repo, pullNumber, commitId, path, position, body) => {
-            await octokit.pulls.createReviewComment({
-              owner,
-              repo,
-              pull_number: pullNumber,
-              commit_id: commitId,
-              path,
-              position,
-              body
-            });
-          };
-
           // Claude API를 사용하여 코드 분석하기
           const analyzeCodeWithClaude = async (apiKey, code, language) => {
-            // Next.js와 TypeScript 관련 분석에 특화된 프롬프트
-            let prompt = '';
-            
-            if (language === 'TypeScript' || language === 'React TypeScript' || language === 'React JSX') {
-              prompt = `다음 ${language} 코드를 Next.js 프로젝트의 관점에서 분석하고 개선 사항을 제안해주세요:
+            try {
+              // API 호출 시도
+              const response = await axios.post('https://api.anthropic.com/v1/complete', {
+                model: "claude-2.0",
+                prompt: `\n\nHuman: 다음 ${language} 코드를 분석하고 개선 사항을 제안해주세요:\n\n${code}\n\n다음 형식으로 분석해주세요:\n1. 코드 품질 평가\n2. 잠재적 버그 또는 성능 문제\n3. 개선 제안\n4. 코드 스타일 및 가독성 피드백\n\nAssistant:`,
+                max_tokens_to_sample: 4000,
+                temperature: 0.5
+              }, {
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-API-Key': apiKey
+                }
+              });
               
-          ${code}
-
-          다음 형식으로 분석해주세요:
-          1. 코드 품질 평가 (TypeScript 타입 안전성, React/Next.js 모범 사례)
-          2. 잠재적 버그 또는 성능 문제 (메모리 누수, 불필요한 리렌더링, 비효율적인 데이터 페칭 등)
-          3. 개선 제안 (코드 구조, 성능 최적화, TypeScript 활용 등)
-          4. Next.js 특화 피드백 (라우팅, 서버 컴포넌트 vs 클라이언트 컴포넌트, getStaticProps/getServerSideProps 사용 등)`;
-            } else {
-              prompt = `다음 ${language} 코드를 분석하고 개선 사항을 제안해주세요:
-              
-          ${code}
-
-          다음 형식으로 분석해주세요:
-          1. 코드 품질 평가
-          2. 잠재적 버그 또는 성능 문제
-          3. 개선 제안
-          4. 코드 스타일 및 가독성 피드백`;
-            }
-            
-            const response = await axios.post('https://api.anthropic.com/v1/messages', {
-              model: "claude-3-sonnet-20240229",
-              max_tokens: 4000,
-              messages: [{
-                role: "user",
-                content: prompt
-              }]
-            }, {
-              headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01'
-              }
-            });
-            
-            // Claude API 응답 처리
-            if (response.data && response.data.content && response.data.content.length > 0) {
-              return response.data.content[0].text;
-            } else {
-              console.error('Claude API 응답 형식 오류:', JSON.stringify(response.data));
-              return '코드 분석 중 오류가 발생했습니다.';
+              return response.data.completion;
+            } catch (error) {
+              console.error('Claude API 호출 실패:', error.message);
+              return '코드 분석 중 오류가 발생했습니다. Claude API에 연결할 수 없습니다.';
             }
           };
 
@@ -171,21 +107,6 @@ jobs:
               // PR 변경 사항 가져오기
               const files = await getPRChanges(octokit, owner, repo, pullNumber);
               
-              debugLog(`PR #${pullNumber}의 변경된 파일 수:`, files.length);
-              
-              // 파일 목록 로깅
-              files.forEach(file => {
-                debugLog(`변경된 파일:`, {
-                  filename: file.filename,
-                  status: file.status,
-                  changes: file.changes,
-                  additions: file.additions,
-                  deletions: file.deletions,
-                  hasPatch: !!file.patch,
-                  patchLength: file.patch ? file.patch.length : 0
-                });
-              });
-              
               // PR 요약 코멘트 생성
               let summaryComment = `# 자동 코드 리뷰 결과\n\n`;
               summaryComment += `PR #${pullNumber}: ${pullRequest.title}\n\n`;
@@ -210,119 +131,25 @@ jobs:
                   case 'tsx':
                     language = 'React TypeScript';
                     break;
-                  case 'py':
-                    language = 'Python';
-                    break;
-                  case 'java':
-                    language = 'Java';
-                    break;
-                  case 'rb':
-                    language = 'Ruby';
-                    break;
-                  case 'go':
-                    language = 'Go';
-                    break;
-                  case 'cpp':
-                  case 'cc':
-                  case 'cxx':
-                    language = 'C++';
-                    break;
-                  case 'c':
-                    language = 'C';
-                    break;
-                  case 'cs':
-                    language = 'C#';
-                    break;
-                  case 'css':
-                    language = 'CSS';
-                    break;
-                  case 'scss':
-                  case 'sass':
-                    language = 'SCSS/SASS';
-                    break;
-                  case 'html':
-                    language = 'HTML';
-                    break;
-                  case 'json':
-                    language = 'JSON';
-                    break;
-                  case 'md':
-                  case 'markdown':
-                    language = 'Markdown';
-                    break;
-                  case 'yml':
-                  case 'yaml':
-                    language = 'YAML';
-                    break;
+                  // ... 다른 언어들
                   default:
                     language = 'Unknown';
                 }
                 
-                // Next.js 관련 파일이면서, 텍스트 파일만 분석 (바이너리 파일 제외)
-                if (language !== 'Unknown' && file.patch && file.changes < 2000) {
+                // 텍스트 파일만 분석
+                if (language !== 'Unknown' && file.patch) {
                   console.log(`파일 분석 중: ${file.filename}`);
                   
                   try {
-                    // Claude API 호출 전 로깅
-                    debugLog(`Claude API 호출 중: ${file.filename}`, { language });
-                    
                     // Claude를 통해 코드 분석
                     const analysis = await analyzeCodeWithClaude(claudeApiKey, file.patch, language);
                     
-                    // 분석 결과 확인
-                    debugLog(`Claude 분석 결과 수신 (길이: ${analysis.length})`);
-                    
-                    // 빈 분석 결과 확인
-                    if (!analysis || analysis.trim() === '') {
-                      console.error(`경고: ${file.filename}에 대한 빈 분석 결과`);
-                    }
-                    
                     // 파일별 리뷰 코멘트 생성
                     summaryComment += `\n## ${file.filename} 분석\n\n${analysis}\n\n`;
-                    
-                    // 특정 코드 라인에 코멘트 추가
-                    if (file.patch && pullRequest.head.sha) {
-                      await commentOnCode(
-                        octokit,
-                        owner,
-                        repo,
-                        pullNumber,
-                        pullRequest.head.sha,
-                        file.filename,
-                        file.changes > 0 ? Math.min(file.changes, 5) : 1, // 변경된 첫 부분 근처에 코멘트
-                        `${language} 코드 리뷰:\n\n${analysis.split('\n').slice(0, 3).join('\n')}...`
-                      );
-                    }
                   } catch (error) {
                     console.error(`${file.filename} 분석 중 오류:`, error);
-                    
-                    // 자세한 오류 정보 로깅
-                    if (DEBUG) {
-                      if (error.response) {
-                        debugLog('API 오류 응답:', {
-                          status: error.response.status,
-                          statusText: error.response.statusText,
-                          data: error.response.data
-                        });
-                      } else if (error.request) {
-                        debugLog('API 요청 후 응답 없음:', error.request);
-                      } else {
-                        debugLog('API 요청 설정 중 오류:', error.message);
-                      }
-                      
-                      if (error.config) {
-                        debugLog('API 요청 설정:', {
-                          url: error.config.url,
-                          method: error.config.method,
-                          headers: error.config.headers
-                        });
-                      }
-                    }
-                    
-                    summaryComment += `\n## ${file.filename}\n\n분석 중 오류가 발생했습니다: ${error.message}\n\n`;
+                    summaryComment += `\n## ${file.filename}\n\n분석 중 오류가 발생했습니다.\n\n`;
                   }
-                } else if (file.changes >= 2000) {
-                  summaryComment += `\n## ${file.filename}\n\n파일이 너무 크거나 복잡하여 분석을 건너뛰었습니다 (${file.changes}줄 변경).\n\n`;
                 }
               }
               

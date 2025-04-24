@@ -1,103 +1,92 @@
 /**
- * Claude API 통합 모듈
+ * 유틸리티 함수 모음
  */
-
-const Anthropic = require('@anthropic-ai/sdk');
-const { sanitizeCode, getLanguageFromFilename } = require('./utils');
-
-// Anthropic Claude API 클라이언트 초기화
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
 
 /**
- * Claude를 사용하여 코드 분석
- * @param {string} code - 분석할 코드
- * @param {string} filename - 파일명
- * @param {Object} options - 추가 옵션
- * @returns {Promise<string>} - 분석 결과
+ * 민감한 정보를 코드에서 제거
+ * @param {string} code - 원본 코드
+ * @returns {string} - 민감 정보가 제거된 코드
  */
-async function analyzeCodeWithClaude(code, filename, options = {}) {
-  try {
-    // 파일 확장자에서 언어 추출
-    const language = getLanguageFromFilename(filename);
+export function sanitizeCode(code) {
+  if (!code) return '';
 
-    // 민감한 정보 제거
-    const sanitizedContent = sanitizeCode(code);
+  // API 키, 시크릿, 암호 등 마스킹
+  let sanitizedCode = code.replace(/(['"`])(?:api|key|token|secret|password|pwd)(?:[_-]?\w+)?(['"`])\s*[=:]\s*(['"`])[\w\-+.]+(['"`])/gi,
+    '$1$2$3[REDACTED]$4');
 
-    // 프롬프트 구성
-    const prompt = generateReviewPrompt(sanitizedContent, language, filename, options);
+  // 내부 URL, IP 마스킹
+  sanitizedCode = sanitizedCode.replace(/(https?:\/\/|(?:\d{1,3}\.){3}\d{1,3})[\w\-.:]*/gi,
+    '[REDACTED_URL]');
 
-    console.log(`Claude에 ${filename} 코드 분석 요청 중...`);
-
-    // Claude API 호출
-    const message = await anthropic.messages.create({
-      model: 'claude-3-7-sonnet-20250219', // 최신 모델 사용
-      max_tokens: 4000,
-      system: "당신은 경험 많은 소프트웨어 개발자이며 코드 리뷰 전문가입니다. 코드를 깊이 분석하고 구체적이고 실용적인 피드백을 제공합니다.",
-      messages: [
-        { role: 'user', content: prompt }
-      ],
-      // 비저장 옵션 활성화 (API 버전에 따라 파라미터명 확인 필요)
-      data_retention_policy: "discard"
-    });
-
-    console.log(`${filename} 코드 분석 완료`);
-    return message.content[0].text;
-  } catch (error) {
-    console.error('Claude API 호출 중 오류:', error);
-    return `코드 분석 중 오류가 발생했습니다: ${error.message}`;
-  }
+  return sanitizedCode;
 }
 
 /**
- * 코드 리뷰를 위한 프롬프트 생성
- * @param {string} code - 분석할 코드
- * @param {string} language - 프로그래밍 언어
+ * 파일 확장자에 따라 언어 이름 반환
  * @param {string} filename - 파일명
- * @param {Object} options - 추가 옵션
- * @returns {string} - 프롬프트
+ * @returns {string} - 언어 이름
  */
-function generateReviewPrompt(code, language, filename, options = {}) {
-  return `
-다음은 GitHub Pull Request에 포함된 "${filename}" 파일의 코드입니다. 
-이 코드를 분석하고 다음 측면에서 리뷰해주세요:
+export function getLanguageFromFilename(filename) {
+  const ext = filename.split('.').pop().toLowerCase();
 
-1. 코드 품질 및 가독성
-   - 명확성, 일관성, 간결성
-   - 네이밍 규칙 및 포맷팅
-   - 코드 구조 및 모듈화
+  const languageMap = {
+    'js': 'javascript',
+    'ts': 'typescript',
+    'jsx': 'javascript',
+    'tsx': 'typescript',
+    'py': 'python',
+    'rb': 'ruby',
+    'java': 'java',
+    'php': 'php',
+    'go': 'go',
+    'c': 'c',
+    'cpp': 'c++',
+    'cs': 'csharp',
+    'swift': 'swift',
+    'kt': 'kotlin',
+    'rs': 'rust',
+    'sh': 'bash',
+    'json': 'json',
+    'yml': 'yaml',
+    'yaml': 'yaml',
+    'md': 'markdown',
+    'html': 'html',
+    'css': 'css',
+    'scss': 'scss',
+    'sql': 'sql'
+  };
 
-2. 잠재적인 버그나 문제점
-   - 논리적 오류
-   - 경계 조건 및 예외 처리
-   - 타입 관련 이슈
-
-3. 성능 최적화 제안
-   - 비효율적인 알고리즘이나 데이터 구조
-   - 불필요한 연산이나 메모리 사용
-   - 최적화 가능한 부분
-
-4. 보안 문제
-   - 입력 검증 부족
-   - 인증/권한 문제
-   - 일반적인 보안 취약점
-
-5. 개선할 수 있는 부분
-   - 디자인 패턴 적용
-   - 테스트 가능성
-   - 코드 재사용성
-
-코드:
-\`\`\`${language}
-${code}
-\`\`\`
-
-리뷰는 명확하고 건설적인 피드백을 제공하며, 코드의 강점도 언급해주세요.
-각 섹션별로 중요한 부분을 먼저 언급하고, 개선 제안이 있다면 구체적인 코드 예시를 들어주세요.
-`;
+  return languageMap[ext] || 'plaintext';
 }
 
-module.exports = {
-  analyzeCodeWithClaude
-};
+/**
+ * 리뷰할 파일 필터링
+ * @param {Array} files - 파일 목록
+ * @param {Object} options - 필터링 옵션
+ * @returns {Array} - 필터링된 파일 목록
+ */
+export function filterFilesToReview(files, options = {}) {
+  const defaultOptions = {
+    maxFilesToReview: 10,
+    excludePatterns: [/node_modules/, /\.env/, /\.lock$/, /\.git/],
+    includedExtensions: ['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'rb', 'go', 'php', 'c', 'cpp', 'cs', 'swift']
+  };
+
+  const opts = { ...defaultOptions, ...options };
+
+  return files
+    .filter(file => {
+      // 제외 패턴에 해당하는 파일 필터링
+      for (const pattern of opts.excludePatterns) {
+        if (pattern.test(file.filename)) {
+          return false;
+        }
+      }
+
+      // 포함된 확장자만 처리
+      const ext = file.filename.split('.').pop().toLowerCase();
+      return opts.includedExtensions.includes(ext);
+    })
+    .sort((a, b) => b.changes - a.changes) // 변경이 많은 파일 우선
+    .slice(0, opts.maxFilesToReview); // 최대 파일 수 제한
+}

@@ -2,9 +2,9 @@
  * GitHub API 통합 모듈
  */
 
-const { Octokit } = require('@octokit/rest');
-const { analyzeCodeWithClaude } = require('./claude-api');
-const { filterFilesToReview } = require('./utils');
+import { Octokit } from '@octokit/rest';
+import { analyzeCodeWithClaude } from './claude-api.js';
+import { filterFilesToReview } from './utils.js';
 
 // GitHub API 클라이언트 초기화
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
@@ -14,7 +14,7 @@ const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
  * @param {Object} req - Express 요청 객체
  * @param {Object} res - Express 응답 객체
  */
-async function handleGitHubWebhook(req, res) {
+export async function handleGitHubWebhook(req, res) {
   try {
     const event = req.headers['x-github-event'];
     const payload = req.body;
@@ -49,7 +49,7 @@ async function handleGitHubWebhook(req, res) {
  * @param {number} options.pullNumber - PR 번호
  * @param {string} options.sha - 커밋 SHA
  */
-async function reviewPullRequest({ owner, repo, pullNumber, sha }) {
+export async function reviewPullRequest({ owner, repo, pullNumber, sha }) {
   try {
     console.log(`GitHub PR #${pullNumber} (${owner}/${repo}) 리뷰 시작`);
 
@@ -149,7 +149,7 @@ async function addPRComment({ owner, repo, pullNumber, body }) {
 /**
  * Pull Request 수동 리뷰 요청 처리
  */
-async function handleManualReviewRequest(req, res) {
+export async function handleManualReviewRequest(req, res) {
   try {
     const { owner, repo, pullNumber, sha } = req.body;
 
@@ -167,9 +167,3 @@ async function handleManualReviewRequest(req, res) {
     res.status(500).json({ error: '리뷰 요청 처리 중 오류가 발생했습니다' });
   }
 }
-
-module.exports = {
-  handleGitHubWebhook,
-  handleManualReviewRequest,
-  reviewPullRequest
-};

@@ -2,8 +2,11 @@
  * Claude API 통합 모듈
  */
 
-const Anthropic = require('@anthropic-ai/sdk');
-const { sanitizeCode, getLanguageFromFilename } = require('./utils');
+import Anthropic from '@anthropic-ai/sdk';
+import { sanitizeCode, getLanguageFromFilename } from './utils.js';
+import dotenv from "dotenv";
+
+dotenv.config();
 
 // Anthropic Claude API 클라이언트 초기화
 const anthropic = new Anthropic({
@@ -17,7 +20,7 @@ const anthropic = new Anthropic({
  * @param {Object} options - 추가 옵션
  * @returns {Promise<string>} - 분석 결과
  */
-async function analyzeCodeWithClaude(code, filename, options = {}) {
+export async function analyzeCodeWithClaude(code, filename, options = {}) {
   try {
     // 파일 확장자에서 언어 추출
     const language = getLanguageFromFilename(filename);
@@ -97,7 +100,3 @@ ${code}
 각 섹션별로 중요한 부분을 먼저 언급하고, 개선 제안이 있다면 구체적인 코드 예시를 들어주세요.
 `;
 }
-
-module.exports = {
-  analyzeCodeWithClaude
-};
